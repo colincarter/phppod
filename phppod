@@ -1,0 +1,415 @@
+#!/usr/bin/env php
+<?php
+
+set_time_limit(0);
+error_reporting(E_ALL|E_STRICT);
+date_default_timezone_set("Europe/London");
+
+$home         = getenv('HOME') or dodie("Could not find home directory");
+$conf_dir     = $home.DIRECTORY_SEPARATOR.'.phppod';
+$ini_file     = $conf_dir.DIRECTORY_SEPARATOR.'phppod.ini';
+$server_list  = $conf_dir.DIRECTORY_SEPARATOR.'serverlist';
+$db_file      = $conf_dir.DIRECTORY_SEPARATOR.'phppod.db';
+$log_file     = $conf_dir.DIRECTORY_SEPARATOR.'phppod.log';
+$ini          = array();
+$silent       = true;
+$verbose      = true;
+$ignore_pattern= "";
+
+function logger($str)
+{
+  global $log_file;
+  if (!file_exists($log_file))
+  {
+    touch($log_file);
+  }
+
+  error_log($str."\n", 3, $log_file);
+}
+
+function println($str)
+{
+  global $silent;
+  if ($silent === false)
+  {
+    echo $str;
+  }
+}
+
+function dodie($str='')
+{
+  if (!empty($str))
+  {
+    println(" ".$str."\n");
+  }
+
+  logger($str);
+  exit;
+}
+
+
+class DB
+{
+  private $_db;
+
+  public function __construct($db_location)
+  {
+    $dbstr = "sqlite:{$db_location}";
+    $this->_db = new PDO($dbstr);
+    $this->init_database();
+  }
+
+  public function init_database()
+  {
+    $query = "create table if not exists downloaded (url text primary key)";
+    $this->_db->exec($query);
+  }
+
+  public function downloaded($url)
+  {
+    if (empty($url))
+    {
+      return false;
+    }
+
+    $query = "select url from downloaded where url='{$url}'";
+    $q = $this->_db->query($query);
+    if ($q and $q->fetch() !== false)
+    {
+      return true;
+    }
+
+    return false;
+  }
+
+
+  public function update_downloaded($url)
+  {
+    $query = "insert into downloaded (url) values('{$url}')";
+    $rows = $this->_db->exec($query);
+  }
+
+  public function get_all_records()
+  {
+    $query = "select url from downloaded";
+    $q = $this->_db->query($query);
+    $result = $q->fetchAll();
+    if ($result !== false)
+    {
+      return $result;
+    }
+
+    return false;
+  }
+}
+
+
+function update_playlist($dest)
+{
+  global $basepath;
+  $dest = $dest."\n";
+  $playlistname = $basepath . DIRECTORY_SEPARATOR . date("d-m-Y") . '.m3u';
+  @file_put_contents($playlistname, $dest, FILE_APPEND);
+}
+
+function make_paths($category, $name)
+{
+  global $basepath;
+
+  $categorypath = $basepath.DIRECTORY_SEPARATOR.$category;
+  $namepath = $categorypath.DIRECTORY_SEPARATOR.$name;
+
+  if (!@file_exists($basepath))
+  {
+    @mkdir($basepath);
+  }
+
+  if (!@file_exists($categorypath))
+  {
+    @mkdir($categorypath);
+  }
+
+  if (!@file_exists($namepath))
+  {
+    @mkdir($namepath);
+  }
+}
+
+function _do_download($src, $dest)
+{
+  global $silent;
+
+  $wget_opts = '';
+
+  if ($silent)
+    $wget_opts .= '-q ';
+
+  $return_code = 0;
+
+  $return = system('wget '.$wget_opts.'-O '.escapeshellarg($dest).' '.escapeshellarg($src), $return_code);
+
+	return $return === false ? false : true;
+}
+
+function download($url, $category, $name, $length)
+{
+  global $basepath, $verbose;
+
+  $urlparts   = parse_url($url);
+  $fileparts  = pathinfo($urlparts['path']);
+  $basename   = urldecode($fileparts['basename']);
+
+  $dest = $basepath.DIRECTORY_SEPARATOR .$category.DIRECTORY_SEPARATOR.$name.DIRECTORY_SEPARATOR.$basename;
+/*
+  if (is_ignored($basename))
+  {
+#    if ($verbose)
+      println('Ignoring ' . $basename."\n");
+
+//    return true;
+  }
+*/
+
+  // Skip file if it exists already
+  if (@file_exists($dest))
+  {
+    if ($verbose)
+      println('File '. $basename . " already exists...skipping\n");
+
+    return false;
+  }
+
+  // Now go an download the file
+
+  println('Downloading '.$basename.' ['.$length.' bytes]...');
+
+  make_paths($category, $name);
+
+  if (_do_download($url, $dest) == false)
+  {
+    println("Failed to download\n");
+    return false;
+  }
+
+  update_playlist($dest);
+  println("done\n");
+
+  return true;
+}
+
+
+
+function init_conf($dir, $ini_file, $list_file)
+{
+  global $ini;
+
+  if (!file_exists($dir))
+  {
+    logger('Creating conf directory');
+    mkdir($dir);
+  }
+
+  if (!file_exists($ini_file))
+  {
+    $initext = <<< ENDINI
+silent = 0
+ENDINI;
+    file_put_contents($ini_file, trim($initext));
+  }
+
+  if (!file_exists($list_file))
+  {
+    $list = <<< LIST
+# <url> <category> <name>
+LIST;
+    file_put_contents($list_file, trim($list));
+  }
+
+  $ini = parse_ini_file($ini_file);
+}
+
+function set_ignore_pattern($pattern)
+{
+  global $ignore_pattern;
+
+  $ignore_pattern = $pattern;
+}
+
+function is_ignored($file)
+{
+  global $ignore_pattern;
+
+  if ($ignore_pattern == "")
+    return false;
+
+  // Form a regular expression
+  $ignore = '/'.$ignore_pattern.'/';
+  $matches = array();
+
+  if (preg_match($ignore, $file, $matches))
+    return true;
+
+  return false;
+}
+
+
+function parse_command_args()
+{
+  global $argv, $argc, $db;
+
+  if (!isset($argv[1]))
+  {
+    return;
+  }
+
+  switch ($argv[1])
+  {
+    case '-s':
+      global $silent;
+      $silent = true;
+      break;
+
+    case 'import':
+      if (!isset($argv[2]) or empty($argv[2]))
+      {
+        break;
+      }
+      $filename = $argv[2];
+      $done = file_get_contents($filename);
+      $urls = explode("\n", $done);
+      $todo = count($urls);
+      $i = 1;
+      foreach ($urls as $url)
+      {
+        println("Importing {$filename}... {$i}/{$todo}\r");
+        $db->update_downloaded($url);
+        $i++;
+      }
+      $i--;
+      println("Importing {$filename}... {$i}/{$todo}... done\n");
+      break;
+
+    case 'export':
+      $rows = $db->get_all_records();
+      foreach ($rows as $row)
+      {
+        println($row['url']."\n");
+      }
+      exit;
+      break;
+
+    case 'ignore':
+      set_ignore_pattern($argv[2]);
+      break;
+
+  }
+}
+
+function lock()
+{
+  global $basepath;
+
+}
+
+function unlock()
+{
+  global $basepath;
+
+}
+
+init_conf($conf_dir, $ini_file, $server_list);
+$silent = (bool)$ini['silent'];
+$basepath = $ini['basepath'];
+
+lock();
+
+try
+{
+  $db = new DB($db_file);
+}
+catch (PDOException $e)
+{
+  dodie('Unable to initialise database');
+}
+
+parse_command_args();
+
+// Make sure only one instance is running
+// import .podget done into it
+
+if ($verbose)
+  println('Downloading to '.$basepath);
+
+$feeds = explode("\n", file_get_contents($server_list));
+
+foreach($feeds as $line)
+{
+  $line = trim($line);
+
+  if (empty($line) or substr_compare($line, '#', 0, 1) == 0)
+  {
+    continue;
+  }
+
+  list($url, $category, $name) = explode(' ', $line);
+
+  trim($url);
+  trim($category);
+  trim($name);
+
+  if ($verbose)
+  {
+    println("\n----------------------------------------\n");
+    println('Category: '.$category.' Name: '.$name."\n");
+    println('Downloading feed index for '. $url . "\n");
+  }
+
+  $feed = @file_get_contents($url);
+  if ($feed === false)
+  {
+    if ($verbose)
+      println('Failed to open feed '. $url."\n");
+
+    continue;
+  }
+
+  $xml = @simplexml_load_string($feed);
+  if ($xml === false or (!isset($xml->channel) and !isset($xml->channel->item)))
+  {
+    if ($verbose)
+      println("No enclosures found\n");
+
+    unset($feed);
+    continue;
+  }
+
+  foreach ($xml->channel->item as $item)
+  {
+    if (!isset($item->enclosure['url']) or empty($item->enclosure['url']))
+    {
+      unset($feed, $xml);
+      continue;
+    }
+
+    $enclosure = trim($item->enclosure['url']);
+
+    if (!$db->downloaded($enclosure))
+    {
+      if (download($enclosure, $category, $name, $item->enclosure['length']))
+      {
+        $db->update_downloaded($enclosure);
+       }
+    }
+    else
+    {
+      if ($verbose)
+        println('Already downloaded '. $enclosure . "\n");
+    }
+  }
+
+  unset($feed, $xml);
+}
+
+unlock();
+if ($verbose)
+  println('memory usage= '. memory_get_peak_usage(true). "\n");
