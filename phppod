@@ -267,6 +267,9 @@ function is_ignored($file)
   return false;
 }
 
+function set_catch_up($catch_up)
+{
+}
 
 function parse_command_args()
 {
@@ -315,6 +318,13 @@ function parse_command_args()
 
     case 'ignore':
       set_ignore_pattern($argv[2]);
+      break;
+      
+    case 'catchup':
+      if (empty($argv[2]))
+        break;
+        
+      set_catch_up($argv[2]);
       break;
 
   }
