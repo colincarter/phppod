@@ -268,6 +268,38 @@ function is_ignored($file)
 }
 
 
+function export_opml()
+{
+  global $server_list;
+
+  $opml = '<opml version="1.0"><head><title>PHPPod OPML File</title></head><body>';
+
+
+  $feeds = explode("\n", file_get_contents($server_list));
+  foreach($feeds as $line)
+  {
+    $line = trim($line);
+
+    if (empty($line) or substr_compare($line, '#', 0, 1) == 0)
+    {
+      continue;
+    }
+
+    list($url, $category, $name) = explode(' ', $line);
+
+    $url =      trim($url);
+    $category = trim($category);
+    $name =     trim($name);
+
+    $opml .= '<outline title="'.$name.'" text="'.$name.'" type="rss" version="rss" xmlUrl="'.$url.'" />';
+  }
+
+  $opml .= '</body></opml>';
+
+  return $opml;
+}
+
+
 function parse_command_args()
 {
   global $argv, $argc, $db;
@@ -310,6 +342,11 @@ function parse_command_args()
       {
         println($row['url']."\n");
       }
+      exit;
+      break;
+
+    case 'exportopml':
+      echo export_opml();
       exit;
       break;
 
@@ -368,9 +405,9 @@ foreach($feeds as $line)
 
   list($url, $category, $name) = explode(' ', $line);
 
-  trim($url);
-  trim($category);
-  trim($name);
+  $url =      trim($url);
+  $category = trim($category);
+  $name =     trim($name);
 
   if ($verbose)
   {
